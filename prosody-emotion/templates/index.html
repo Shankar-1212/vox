@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Voice Analysis</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.js"></script>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+      button {
+        padding: 10px 15px;
+        margin: 10px 5px;
+        font-size: 16px;
+        cursor: pointer;
+      }
+      #results {
+        margin-top: 20px;
+        border: 1px solid #ddd;
+        padding: 15px;
+        border-radius: 5px;
+        min-height: 200px;
+      }
+      .recording {
+        background-color: #ff5555;
+        color: white;
+      }
+      #status {
+        margin-top: 10px;
+        font-style: italic;
+        color: #666;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Voice Prosody Analysis</h1>
+
+    <div>
+      <button id="recordButton">Start Recording</button>
+      <div id="status">Ready to record</div>
+    </div>
+
+    <div id="results">
+      <p>Voice analysis results will appear here.</p>
+    </div>
+
+    <script>
+      document.addEventListener("DOMContentLoaded", function () {
+        const socket = io();
+        const recordButton = document.getElementById("recordButton");
+        const resultsDiv = document.getElementById("results");
+        const statusDiv = document.getElementById("status");
+
+        let mediaRecorder;
+        let audioChunks = [];
+        let isRecording = false;
+
+        // Handle connection to Socket.IO server
+        socket.on("connect", function () {
+          console.log("Connected to server");
+          statusDiv.textContent = "Connected to server. Ready to record.";
+        });
+
+        socket.on("disconnect", function () {
+          console.log("Disconnected from server");
+          statusDiv.textContent = "Disconnected from server. Refresh the page.";
+          recordButton.disabled = true;
+        });
+
+        // Handle prosody analysis results
+        socket.on("prosody_results", function (data) {
+          console.log("Received prosody results:", data);
+          statusDiv.textContent = "Analysis complete!";
+
+          if (data.error) {
+            resultsDiv.innerHTML = `<p>Error: ${
+              data.message || data.error
+            }</p>`;
+            return;
+          }
+
+          let resultsHtml = "<h2>Voice Analysis Results</h2>";
+
+          if (data.prosody && data.prosody.predictions) {
+            const predictions = data.prosody.predictions;
+
+            resultsHtml += "<h3>Emotions Detected:</h3><ul>";
+
+            // Corrected: Access first element of predictions array
+            if (predictions.length > 0 && predictions[0].emotions) {
+              predictions[0].emotions.forEach((emotion) => {
+                const scorePercent = (emotion.score * 100).toFixed(1);
+                resultsHtml += `<li><strong>${emotion.name}</strong>: ${scorePercent}%</li>`;
+              });
+            } else {
+              resultsHtml += "<li>No emotions detected.</li>";
+            }
+
+            resultsHtml += "</ul>";
+          } else {
+            resultsHtml += "<p>No prosody data found in the response.</p>";
+          }
+
+          resultsDiv.innerHTML = resultsHtml;
+        });
+
+        // Handle the record button
+        recordButton.addEventListener("click", function () {
+          if (isRecording) {
+            stopRecording();
+          } else {
+            startRecording();
+          }
+        });
+
+        async function startRecording() {
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+              audio: true,
+            });
+
+            // Initialize the MediaRecorder with the stream
+            mediaRecorder = new MediaRecorder(stream, {
+              mimeType: "audio/webm",
+              audioBitsPerSecond: 128000,
+            });
+
+            audioChunks = [];
+
+            // Collect audio chunks
+            mediaRecorder.addEventListener("dataavailable", (event) => {
+              if (event.data.size > 0) {
+                audioChunks.push(event.data);
+              }
+            });
+
+            // When recording stops, send the complete audio
+            mediaRecorder.addEventListener("stop", () => {
+              statusDiv.textContent = "Processing audio...";
+
+              // Create a Blob from all chunks
+              const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+
+              // Convert to base64 and send
+              const reader = new FileReader();
+              reader.onloadend = () => {
+                const base64data = reader.result.split(",")[1];
+
+                // Send the complete audio file using the legacy method
+                // This works more reliably based on your logs
+                socket.emit("audio_data", { audio: base64data });
+              };
+              reader.readAsDataURL(audioBlob);
+            });
+
+            // Start recording
+            mediaRecorder.start(1000); // Collect data in ~1 second chunks
+            isRecording = true;
+            recordButton.textContent = "Stop Recording";
+            recordButton.classList.add("recording");
+            statusDiv.textContent = "Recording...";
+          } catch (err) {
+            console.error("Error accessing microphone:", err);
+            statusDiv.textContent = `Error: ${err.message}`;
+          }
+        }
+
+        function stopRecording() {
+          if (mediaRecorder && mediaRecorder.state !== "inactive") {
+            mediaRecorder.stop();
+            isRecording = false;
+            recordButton.textContent = "Start Recording";
+            recordButton.classList.remove("recording");
+            statusDiv.textContent = "Sending audio for analysis...";
+
+            // Stop all audio tracks
+            mediaRecorder.stream.getTracks().forEach((track) => track.stop());
+          }
+        }
+      });
+    </script>
+  </body>
+</html>
